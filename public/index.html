@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WiFi & Bluetooth File Transfer</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Authentication Check -->
+    <script>
+        (function checkAuth() {
+            const token = localStorage.getItem('authToken');
+            if (!token) {
+                window.location.href = '/login.html';
+                return;
+            }
+            // Verify token is still valid
+            fetch('/api/auth-check?token=' + token)
+                .then(res => res.json())
+                .then(data => {
+                    if (!data.authenticated) {
+                        localStorage.removeItem('authToken');
+                        window.location.href = '/login.html';
+                    }
+                })
+                .catch(() => {
+                    localStorage.removeItem('authToken');
+                    window.location.href = '/login.html';
+                });
+        })();
+    </script>
+
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>⚡ Ultra-Fast File Transfer</h1>
+                <p class="subtitle">Transfer files at lightning speed over WiFi & Bluetooth</p>
+            </div>
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="status-icon wifi-icon">📡</span>
+                    <span id="wifiStatus">WiFi: Ready</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-icon bluetooth-icon" id="bluetoothIcon">🔵</span>
+                    <span id="bluetoothStatus">Bluetooth: Disabled</span>
+                </div>
+                <div class="status-item">
+                    <button class="logout-btn" onclick="logout()">🚪 Logout</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <!-- Upload Section -->
+            <section class="upload-section">
+                <h2>📤 Upload Files</h2>
+                
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-content">
+                        <svg class="upload-icon" viewBox="0 0 64 64" width="64" height="64">
+                            <path d="M32 8L16 24h12v24h20V24h12L32 8z" fill="#6366f1" stroke="#6366f1" stroke-width="2"/>
+                        </svg>
+                        <h3>Drag & Drop Files Here</h3>
+                        <p>or click to select files</p>
+                        <p class="file-info">Any file type • Up to 100GB</p>
+                    </div>
+                    <input type="file" id="fileInput" multiple hidden>
+                </div>
+
+                <!-- Transfer Options -->
+                <div class="transfer-options">
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="parallelTransfer" checked>
+                        <span class="checkmark"></span>
+                        <span>Use WiFi + Bluetooth Parallel</span>
+                    </label>
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="chunkUpload" checked>
+                        <span class="checkmark"></span>
+                        <span>Chunked Upload (for large files)</span>
+                    </label>
+                </div>
+
+                <!-- Upload Progress -->
+                <div id="uploadProgress" class="upload-progress" style="display: none;">
+                    <div class="progress-item">
+                        <div class="progress-header">
+                            <span id="progressFileName">Uploading...</span>
+                            <span id="progressPercent">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div id="progressBarFill" class="progress-fill"></div>
+                        </div>
+                        <div class="progress-details">
+                            <span id="progressSpeed">0 MB/s</span>
+                            <span id="progressTime">--:--</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Files List Section -->
+            <section class="files-section">
+                <h2>📁 Shared Files</h2>
+                <div id="filesList" class="files-list">
+                    <p class="empty-message">No files yet. Upload some to get started!</p>
+                </div>
+            </section>
+
+            <!-- Statistics -->
+            <section class="stats-section">
+                <h2>📊 Transfer Statistics</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-number" id="totalUploads">0</div>
+                        <div class="stat-label">Total Uploads</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="totalSize">0 MB</div>
+                        <div class="stat-label">Total Size</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="avgSpeed">0 MB/s</div>
+                        <div class="stat-label">Avg Speed</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="activeTransfers">0</div>
+                        <div class="stat-label">Active Transfers</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Connection Info -->
+            <section class="info-section">
+                <h2>🔗 Connection Info</h2>
+                <div id="connectionInfo" class="info-box">
+                    <p>Loading connection information...</p>
+                </div>
+            </section>
+        </main>
+
+        <!-- Bluetooth Control -->
+        <aside class="bluetooth-panel">
+            <h3>🔵 Bluetooth Control</h3>
+            <p class="description">Enable Bluetooth for simultaneous dual-channel transfers</p>
+            <button id="bluetoothBtn" class="btn btn-bluetooth">Enable Bluetooth</button>
+            <div id="bluetoothInfo" class="bluetooth-info" style="display: none;">
+                <p class="success">✓ Bluetooth enabled for parallel transfers</p>
+                <p class="info-text">Transfers now use both WiFi and Bluetooth channels for maximum speed</p>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast" class="toast"></div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>&copy; 2026 Souvik Saha. Inc. or its affiliates. All rights reserved.. <a href="https://www.specxy.net" target="_blank">specxy.net</a> </p> <!-- <a href="/LICENSE" target="_blank">View LICENSE</a> -->
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>
