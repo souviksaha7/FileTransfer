@@ -7,15 +7,41 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const compression = require('compression');
 const os = require('os');
-const { registerQREndpoints } = require('./qr-pairing');
+const { registerQREndpoints, getLocalIP } = require('./qr-pairing');
+
+// CORS middleware for cross-device connectivity
+const corsOptions = {
+  origin: true, // Allow all origins (necessary for device-to-device communication)
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'X-Auth-Token', 'X-Private-Key-Digest'],
+  credentials: true,
+  timeout: 0
+};
 
 const app = express();
+
+// Apply CORS headers for all responses
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Token, X-Private-Key-Digest, Accept, Authorization');
+  res.header('Access-Control-Max-Age', '86400');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 // Configuration
 const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const TRANSFER_INDEX_FILE = path.join(UPLOAD_DIR, '.transfer-index.json');
 const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
 
 // Password configuration
@@ -34,15 +60,16 @@ app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
 // Authentication middleware - serve index.html only if authenticated
 app.use((req, res, next) => {
-  // Public routes that don't need authentication
-  const publicRoutes = ['/api/login', '/api/health', '/api/auth-check'];
-  
-  if (publicRoutes.includes(req.path)) {
+  // Public API routes that don't need authentication
+  const publicApiRoutes = ['/api/login', '/api/health', '/api/auth-check', '/api/network-info', '/health'];
+  const isPublicApiRoute = publicApiRoutes.includes(req.path) || req.path.startsWith('/api/qr/');
+
+  if (isPublicApiRoute) {
     return next();
   }
   
   // Check for auth token in query, body, or headers
-  const authToken = req.query.token || req.body.token || req.headers['x-auth-token'];
+  const authToken = req.query.token || req.body?.token || req.headers['x-auth-token'];
   console.log(`[AUTH MIDDLEWARE] ${req.method} ${req.path} - authToken present: ${!!authToken}`);
   
   // Allow index, share pages, and the public download endpoint (used by shared links)
@@ -90,6 +117,320 @@ const upload = multer({
 const activeTransfers = new Map();
 const connectedClients = new Set();
 let bluetoothConnected = false;
+
+function inferOriginalName(fileName) {
+  const match = String(fileName || '').match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(.+)$/i);
+  return match ? match[1] : fileName;
+}
+
+function getSafeUploadTime(value, fallbackTime = new Date()) {
+  const parsed = value ? new Date(value) : fallbackTime;
+  return Number.isNaN(parsed.getTime()) ? fallbackTime : parsed;
+}
+
+const BASE64_SAFE_PATTERN = /^[A-Za-z0-9+/_=-]+$/;
+
+function sanitizeBase64Value(value, maxLength = 512) {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized.length > maxLength || !BASE64_SAFE_PATTERN.test(normalized)) {
+    return '';
+  }
+  return normalized;
+}
+
+function sanitizePrivateMetadata(input) {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+
+  const algorithm = String(input.algorithm || '').trim().toUpperCase();
+  const originalName = String(input.originalName || '').trim().slice(0, 255);
+  const mimeType = String(input.mimeType || 'application/octet-stream').trim().slice(0, 120) || 'application/octet-stream';
+  const salt = sanitizeBase64Value(input.salt, 256);
+  const iv = sanitizeBase64Value(input.iv, 128);
+  const keyDigest = sanitizeBase64Value(input.keyDigest, 256);
+  const iterations = Number.parseInt(input.iterations, 10);
+  const originalSize = Number.parseInt(input.originalSize, 10);
+
+  if (algorithm !== 'AES-GCM') {
+    return null;
+  }
+
+  if (!originalName || !salt || !iv || !keyDigest) {
+    return null;
+  }
+
+  if (!Number.isInteger(iterations) || iterations < 10000 || iterations > 2000000) {
+    return null;
+  }
+
+  if (!Number.isFinite(originalSize) || originalSize < 0) {
+    return null;
+  }
+
+  return {
+    algorithm: 'AES-GCM',
+    originalName,
+    mimeType,
+    salt,
+    iv,
+    keyDigest,
+    iterations,
+    originalSize
+  };
+}
+
+function parsePrivateUploadMetadata(rawValue) {
+  if (rawValue === undefined || rawValue === null || rawValue === '') {
+    return { meta: null };
+  }
+
+  let parsedValue = rawValue;
+  if (typeof rawValue === 'string') {
+    try {
+      parsedValue = JSON.parse(rawValue);
+    } catch {
+      return { error: 'Invalid private upload metadata JSON' };
+    }
+  }
+
+  const sanitized = sanitizePrivateMetadata(parsedValue);
+  if (!sanitized) {
+    return { error: 'Invalid private upload metadata' };
+  }
+
+  return { meta: sanitized };
+}
+
+function getPrivateKeyDigest(req) {
+  return String(req.headers['x-private-key-digest'] || req.query.privateKeyDigest || '').trim();
+}
+
+function canAccessPrivateFile(fileInfo, privateKeyDigest) {
+  if (!fileInfo || !fileInfo.isPrivate) {
+    return true;
+  }
+
+  const expectedDigest = fileInfo.encryption && fileInfo.encryption.keyDigest
+    ? String(fileInfo.encryption.keyDigest)
+    : '';
+
+  return Boolean(privateKeyDigest && expectedDigest && privateKeyDigest === expectedDigest);
+}
+
+function getClientFileView(fileInfo, transferId) {
+  const payload = {
+    transferId,
+    name: fileInfo.originalName,
+    size: fileInfo.size,
+    uploadTime: fileInfo.uploadTime,
+    transferType: fileInfo.transferType,
+    isPrivate: Boolean(fileInfo.isPrivate)
+  };
+
+  if (fileInfo.isPrivate && fileInfo.encryption) {
+    payload.encryption = {
+      algorithm: fileInfo.encryption.algorithm,
+      salt: fileInfo.encryption.salt,
+      iv: fileInfo.encryption.iv,
+      iterations: fileInfo.encryption.iterations,
+      mimeType: fileInfo.encryption.mimeType,
+      originalSize: fileInfo.encryption.originalSize
+    };
+  }
+
+  return payload;
+}
+
+function cleanupUploadedFile(filePath) {
+  try {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (error) {
+    console.error('[UPLOAD] Cleanup error:', error.message);
+  }
+}
+
+function toTransferFileInfo({
+  transferId = uuidv4(),
+  originalName,
+  fileName,
+  size = 0,
+  filePath,
+  uploadTime = new Date(),
+  transferType = 'WiFi',
+  isPrivate = false,
+  encryption = null
+}) {
+  const resolvedFileName = fileName || path.basename(filePath || '');
+  const resolvedPath = path.resolve(filePath || path.join(UPLOAD_DIR, resolvedFileName));
+  const normalizedEncryption = isPrivate ? sanitizePrivateMetadata(encryption) : null;
+  const normalizedPrivate = Boolean(isPrivate && normalizedEncryption);
+
+  return {
+    transferId,
+    originalName: originalName || inferOriginalName(resolvedFileName),
+    fileName: resolvedFileName,
+    size: Number(size) || 0,
+    path: resolvedPath,
+    uploadTime: getSafeUploadTime(uploadTime),
+    transferType: transferType || (normalizedPrivate ? 'Private (E2E)' : 'WiFi'),
+    isPrivate: normalizedPrivate,
+    encryption: normalizedPrivate ? normalizedEncryption : null
+  };
+}
+
+function persistTransfersIndex() {
+  try {
+    const entries = [];
+
+    activeTransfers.forEach((fileInfo, transferId) => {
+      try {
+        if (!fs.existsSync(fileInfo.path) || !fs.statSync(fileInfo.path).isFile()) {
+          return;
+        }
+
+        entries.push({
+          transferId,
+          originalName: fileInfo.originalName,
+          fileName: fileInfo.fileName,
+          size: fileInfo.size,
+          uploadTime: fileInfo.uploadTime,
+          transferType: fileInfo.transferType,
+          isPrivate: Boolean(fileInfo.isPrivate),
+          encryption: fileInfo.isPrivate ? fileInfo.encryption : null
+        });
+      } catch (err) {
+        console.error(`[TRANSFER INDEX] Skipping invalid entry ${transferId}:`, err.message);
+      }
+    });
+
+    const tempPath = `${TRANSFER_INDEX_FILE}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(entries, null, 2), 'utf8');
+    fs.renameSync(tempPath, TRANSFER_INDEX_FILE);
+  } catch (error) {
+    console.error('[TRANSFER INDEX] Failed to persist transfer index:', error);
+  }
+}
+
+function registerTransfer(fileInfoInput, persist = true) {
+  const fileInfo = toTransferFileInfo(fileInfoInput);
+  activeTransfers.set(fileInfo.transferId, fileInfo);
+
+  if (persist) {
+    persistTransfersIndex();
+  }
+
+  return fileInfo;
+}
+
+function removeMissingTransfers() {
+  let changed = false;
+
+  activeTransfers.forEach((fileInfo, transferId) => {
+    try {
+      if (!fs.existsSync(fileInfo.path) || !fs.statSync(fileInfo.path).isFile()) {
+        activeTransfers.delete(transferId);
+        changed = true;
+      }
+    } catch {
+      activeTransfers.delete(transferId);
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    persistTransfersIndex();
+  }
+}
+
+function loadTransfersFromDisk() {
+  const diskFiles = new Map();
+  const uploadEntries = fs.readdirSync(UPLOAD_DIR, { withFileTypes: true });
+
+  uploadEntries.forEach((entry) => {
+    if (!entry.isFile()) {
+      return;
+    }
+
+    if (entry.name === path.basename(TRANSFER_INDEX_FILE)) {
+      return;
+    }
+
+    const fullPath = path.join(UPLOAD_DIR, entry.name);
+
+    try {
+      const stats = fs.statSync(fullPath);
+      diskFiles.set(path.resolve(fullPath), {
+        fileName: entry.name,
+        filePath: fullPath,
+        size: stats.size,
+        uploadTime: stats.birthtimeMs ? stats.birthtime : stats.mtime
+      });
+    } catch (err) {
+      console.error(`[STARTUP] Could not read file metadata for ${entry.name}:`, err.message);
+    }
+  });
+
+  let restoredCount = 0;
+
+  if (fs.existsSync(TRANSFER_INDEX_FILE)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(TRANSFER_INDEX_FILE, 'utf8'));
+      if (Array.isArray(parsed)) {
+        parsed.forEach((entry) => {
+          const transferId = entry.transferId || uuidv4();
+          const fileName = entry.fileName;
+          if (!fileName) {
+            return;
+          }
+
+          const filePath = path.resolve(path.join(UPLOAD_DIR, fileName));
+          const diskMeta = diskFiles.get(filePath);
+          if (!diskMeta) {
+            return;
+          }
+
+          registerTransfer({
+            transferId,
+            originalName: entry.originalName,
+            fileName,
+            size: entry.size || diskMeta.size,
+            filePath,
+            uploadTime: entry.uploadTime || diskMeta.uploadTime,
+            transferType: entry.transferType || 'WiFi',
+            isPrivate: Boolean(entry.isPrivate),
+            encryption: entry.encryption || null
+          }, false);
+
+          diskFiles.delete(filePath);
+          restoredCount += 1;
+        });
+      }
+    } catch (error) {
+      console.error('[STARTUP] Failed to load transfer index. Rebuilding from uploads folder:', error.message);
+    }
+  }
+
+  diskFiles.forEach((meta) => {
+    registerTransfer({
+      transferId: uuidv4(),
+      originalName: inferOriginalName(meta.fileName),
+      fileName: meta.fileName,
+      size: meta.size,
+      filePath: meta.filePath,
+      uploadTime: meta.uploadTime,
+      transferType: 'WiFi'
+    }, false);
+    restoredCount += 1;
+  });
+
+  persistTransfersIndex();
+  console.log(`[STARTUP] Restored ${restoredCount} uploaded file(s) from disk.`);
+}
+
+loadTransfersFromDisk();
 
 // ==================== AUTHENTICATION ENDPOINTS ====================
 
@@ -202,21 +543,30 @@ function enableBluetoothTransfer(ws) {
 app.get('/api/system-info', (req, res) => {
   const networkInterfaces = os.networkInterfaces();
   const ipAddresses = [];
+  const preferredIp = getLocalIP();
 
   for (const [name, interfaces] of Object.entries(networkInterfaces)) {
     interfaces.forEach(iface => {
       if (iface.family === 'IPv4' && !iface.internal) {
         ipAddresses.push({
           interface: name,
-          address: iface.address
+          address: iface.address,
+          preferred: iface.address === preferredIp
         });
       }
     });
   }
 
+  ipAddresses.sort((a, b) => {
+    if (a.preferred && !b.preferred) return -1;
+    if (!a.preferred && b.preferred) return 1;
+    return a.interface.localeCompare(b.interface);
+  });
+
   res.json({
     hostname: os.hostname(),
     port: PORT,
+    preferredIp,
     ipAddresses,
     bluetoothSupported: process.platform !== 'win32' || true,
     bluetoothEnabled: bluetoothConnected
@@ -229,44 +579,67 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     return res.status(400).json({ error: 'No file provided' });
   }
 
-  const transferId = uuidv4();
-  const fileInfo = {
-    transferId,
-    originalName: req.file.originalname,
+  const parsedPrivateMeta = parsePrivateUploadMetadata(req.body && req.body.privateMeta);
+  if (parsedPrivateMeta.error) {
+    cleanupUploadedFile(req.file.path);
+    return res.status(400).json({ error: parsedPrivateMeta.error });
+  }
+
+  const privateMeta = parsedPrivateMeta.meta;
+  const isPrivateUpload = Boolean(privateMeta);
+  const displayName = isPrivateUpload ? privateMeta.originalName : req.file.originalname;
+  const displaySize = isPrivateUpload ? privateMeta.originalSize : req.file.size;
+
+  const fileInfo = registerTransfer({
+    originalName: displayName,
     fileName: req.file.filename,
-    size: req.file.size,
-    path: req.file.path,
-    uploadTime: new Date(),
-    transferType: 'WiFi'
-  };
-
-  activeTransfers.set(transferId, fileInfo);
-
-  // Broadcast to all clients
-  broadcastTransferStatus({
-    type: 'file-uploaded',
-    transferId,
-    fileName: req.file.originalname,
-    size: req.file.size,
-    uploadTime: new Date(),
-    transferType: 'WiFi'
+    size: displaySize,
+    filePath: req.file.path,
+    transferType: isPrivateUpload ? 'Private (E2E)' : 'WiFi',
+    isPrivate: isPrivateUpload,
+    encryption: privateMeta
   });
+  const transferId = fileInfo.transferId;
+
+  if (!isPrivateUpload) {
+    // Broadcast public files to all clients.
+    broadcastTransferStatus({
+      type: 'file-uploaded',
+      transferId,
+      fileName: req.file.originalname,
+      size: req.file.size,
+      uploadTime: new Date(),
+      transferType: 'WiFi'
+    });
+  }
 
   res.json({
     success: true,
     transferId,
-    fileName: req.file.originalname,
-    size: req.file.size
+    fileName: displayName,
+    size: displaySize,
+    transferType: fileInfo.transferType,
+    isPrivate: fileInfo.isPrivate,
+    encryption: fileInfo.isPrivate ? {
+      algorithm: fileInfo.encryption.algorithm,
+      salt: fileInfo.encryption.salt,
+      iv: fileInfo.encryption.iv,
+      iterations: fileInfo.encryption.iterations,
+      mimeType: fileInfo.encryption.mimeType,
+      originalSize: fileInfo.encryption.originalSize
+    } : null
   });
 });
 
 // File download endpoint
 app.get('/api/download/:transferId', (req, res) => {
   const { transferId } = req.params;
+  const privateKeyDigest = getPrivateKeyDigest(req);
   console.log(`[DOWNLOAD] ${req.method} /api/download/${transferId} - headers:`, {
     referer: req.headers.referer,
     accept: req.headers.accept,
-    authHeader: req.headers['x-auth-token'] || null
+    authHeader: req.headers['x-auth-token'] || null,
+    privateDigestPresent: Boolean(privateKeyDigest)
   });
 
   const fileInfo = activeTransfers.get(transferId);
@@ -276,14 +649,35 @@ app.get('/api/download/:transferId', (req, res) => {
     return res.status(404).json({ error: 'File not found' });
   }
 
+  if (!canAccessPrivateFile(fileInfo, privateKeyDigest)) {
+    return res.status(403).json({ error: 'Private sharing key is missing or invalid for this file' });
+  }
+
   const filePath = fileInfo.path;
 
   if (!fs.existsSync(filePath)) {
     console.log(`[DOWNLOAD] File missing on disk: ${filePath}`);
+    activeTransfers.delete(transferId);
+    persistTransfersIndex();
     return res.status(404).json({ error: 'File not found on disk' });
   }
 
-  res.setHeader('Content-Disposition', `attachment; filename="${fileInfo.originalName}"`);
+  if (fileInfo.isPrivate && fileInfo.encryption) {
+    const encryptedName = fileInfo.originalName.endsWith('.enc')
+      ? fileInfo.originalName
+      : `${fileInfo.originalName}.enc`;
+    res.setHeader('Content-Disposition', `attachment; filename="${encryptedName}"`);
+    res.setHeader('X-Private-File', '1');
+    res.setHeader('X-Private-Original-Name', encodeURIComponent(fileInfo.originalName));
+    res.setHeader('X-Private-Original-Size', String(fileInfo.encryption.originalSize));
+    res.setHeader('X-Private-Mime-Type', fileInfo.encryption.mimeType || 'application/octet-stream');
+    res.setHeader('X-Private-Enc-Algorithm', fileInfo.encryption.algorithm);
+    res.setHeader('X-Private-Enc-Salt', fileInfo.encryption.salt);
+    res.setHeader('X-Private-Enc-Iv', fileInfo.encryption.iv);
+    res.setHeader('X-Private-Enc-Iterations', String(fileInfo.encryption.iterations));
+  } else {
+    res.setHeader('Content-Disposition', `attachment; filename="${fileInfo.originalName}"`);
+  }
   res.setHeader('Content-Type', 'application/octet-stream');
 
   const fileStream = fs.createReadStream(filePath);
@@ -299,18 +693,20 @@ app.get('/api/download/:transferId', (req, res) => {
 
 // Get list of available files
 app.get('/api/files', (req, res) => {
+  removeMissingTransfers();
   const files = [];
+  const privateKeyDigest = getPrivateKeyDigest(req);
   
   activeTransfers.forEach((fileInfo, transferId) => {
-    if (fs.existsSync(fileInfo.path)) {
-      files.push({
-        transferId,
-        name: fileInfo.originalName,
-        size: fileInfo.size,
-        uploadTime: fileInfo.uploadTime,
-        transferType: fileInfo.transferType
-      });
+    if (!fs.existsSync(fileInfo.path)) {
+      return;
     }
+
+    if (!canAccessPrivateFile(fileInfo, privateKeyDigest)) {
+      return;
+    }
+
+    files.push(getClientFileView(fileInfo, transferId));
   });
 
   res.json({ files });
@@ -409,12 +805,12 @@ function mergeChunks(fileId, fileName, totalChunks) {
         const stats = fs.statSync(outputPath);
         const transferId = uuidv4();
         
-        activeTransfers.set(transferId, {
+        registerTransfer({
           transferId,
           originalName: fileName,
           fileName: path.basename(outputPath),
           size: stats.size,
-          path: outputPath,
+          filePath: outputPath,
           uploadTime: new Date(),
           transferType: 'WiFi (Chunked)'
         });
@@ -514,6 +910,7 @@ app.delete('/api/files/:transferId', (req, res) => {
 
     // Remove from active transfers
     activeTransfers.delete(transferId);
+    persistTransfersIndex();
 
     // Broadcast deletion
     broadcastTransferStatus({
@@ -539,6 +936,10 @@ app.get('/api/files/:transferId/share', (req, res) => {
       return res.status(404).json({ error: 'File not found' });
     }
 
+    if (fileInfo.isPrivate) {
+      return res.status(403).json({ error: 'Private files cannot be shared with public links' });
+    }
+
     // Generate share URL with the transfer ID
     const shareUrl = `${req.protocol}://${req.get('host')}/share/${transferId}`;
 
@@ -562,7 +963,15 @@ app.get('/share/:transferId', (req, res) => {
     const fileInfo = activeTransfers.get(transferId);
 
     if (!fileInfo || !fs.existsSync(fileInfo.path)) {
+      if (fileInfo) {
+        activeTransfers.delete(transferId);
+        persistTransfersIndex();
+      }
       return res.status(404).send('File not found or has been deleted');
+    }
+
+    if (fileInfo.isPrivate) {
+      return res.status(403).send('This file is private and requires a private sharing key inside the app.');
     }
 
     // Serve a share page
@@ -667,8 +1076,16 @@ app.get('/share/:transferId/download', (req, res) => {
 
     const fileInfo = activeTransfers.get(transferId);
     if (!fileInfo || !fs.existsSync(fileInfo.path)) {
+      if (fileInfo) {
+        activeTransfers.delete(transferId);
+        persistTransfersIndex();
+      }
       console.log(`[SHARE DOWNLOAD] File not available for ${transferId}`);
       return res.status(404).send('File not found or has been removed');
+    }
+
+    if (fileInfo.isPrivate) {
+      return res.status(403).send('This file is private and cannot be downloaded from a public link.');
     }
 
     res.setHeader('Content-Disposition', `attachment; filename="${fileInfo.originalName}"`);
@@ -728,6 +1145,7 @@ server.listen(PORT, '0.0.0.0', () => {
       }
     });
   }
+  console.log(`\n✅ Recommended LAN URL: http://${getLocalIP()}:${PORT}`);
   
   // Register QR pairing endpoints
   registerQREndpoints(app);
