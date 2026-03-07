@@ -3,11 +3,20 @@
   "version": "1.0.0",
   "description": "High-speed file transfer using WiFi and Bluetooth simultaneously",
   "main": "server.js",
+  "homepage": "./",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "electron": "electron .",
+    "electron-dev": "concurrently \"npm start\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron-build": "electron-builder",
+    "cap:build": "capacitor build android",
+    "cap:run": "capacitor run android",
+    "cap:sync": "capacitor sync android",
+    "android:build": "cd android && ./gradlew assembleRelease",
+    "android:debug": "cd android && ./gradlew assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk"
   },
-  "keywords": ["file-transfer", "wifi", "bluetooth", "real-time"],
+  "keywords": ["file-transfer", "wifi", "bluetooth", "real-time", "qr-code"],
   "author": "",
   "license": "MIT",
   "dependencies": {
@@ -16,6 +25,17 @@
     "multer": "^1.4.5-lts.1",
     "cors": "^2.8.5",
     "uuid": "^9.0.0",
-    "compression": "^1.7.4"
+    "compression": "^1.7.4",
+    "qrcode": "^1.5.3",
+    "ip": "^1.1.8"
+  },
+  "devDependencies": {
+    "electron": "^26.0.0",
+    "electron-builder": "^24.7.0",
+    "concurrently": "^8.2.0",
+    "wait-on": "^7.0.1",
+    "@capacitor/core": "^5.4.0",
+    "@capacitor/cli": "^5.4.0",
+    "@capacitor/android": "^5.4.0"
   }
 }

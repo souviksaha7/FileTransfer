@@ -7,6 +7,7 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const compression = require('compression');
 const os = require('os');
+const { registerQREndpoints } = require('./qr-pairing');
 
 const app = express();
 const server = http.createServer(app);
@@ -728,8 +729,12 @@ server.listen(PORT, '0.0.0.0', () => {
     });
   }
   
+  // Register QR pairing endpoints
+  registerQREndpoints(app);
+  
   console.log(`\n📁 Upload Directory: ${UPLOAD_DIR}`);
   console.log(`⚡ WebSocket: ws://0.0.0.0:${PORT}`);
+  console.log(`📱 QR Pairing Available at: http://0.0.0.0:${PORT}/api/qr/generate`);
   console.log(`========================================\n`);
   console.log(`✅ Server is accessible from all network interfaces!`);
 });

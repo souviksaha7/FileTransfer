@@ -1,0 +1,45 @@
+{
+  "appId": "com.filetransfer.app",
+  "productName": "File Transfer Pro",
+  "directories": {
+    "buildResources": "public"
+  },
+  "files": [
+    "*.js",
+    "package.json",
+    "node_modules",
+    "public/**/*",
+    "uploads",
+    "!node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme,LICENSE,license,LICENSEs,copying.txt,COPYING.txt}"
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64",
+          "ia32"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "certificateFile": null,
+    "certificatePassword": null,
+    "sign": null
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "File Transfer Pro"
+  },
+  "portable": {
+    "artifactName": "${productName}-${version}.${ext}"
+  }
+}

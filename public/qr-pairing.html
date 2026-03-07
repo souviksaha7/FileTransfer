@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Code Pairing - File Transfer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 500px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            padding: 30px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .tab-button {
+            padding: 12px 20px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            color: #999;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .tab-button.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .qr-container {
+            text-align: center;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        #qrCode {
+            display: inline-block;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .device-list {
+            margin-top: 20px;
+        }
+
+        .device-item {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .device-info h3 {
+            color: #333;
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+
+        .device-info p {
+            color: #999;
+            font-size: 12px;
+        }
+
+        .btn-unpair {
+            background: #ff6b6b;
+            color: white;
+            padding: 8px 12px;
+            font-size: 12px;
+        }
+
+        .btn-unpair:hover {
+            background: #ff5252;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        input[type="text"],
+        input[type="number"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #f0f0f0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+
+        input[type="text"]:focus,
+        input[type="number"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 13px;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .network-info {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .network-info p {
+            margin-bottom: 8px;
+            color: #666;
+            font-size: 13px;
+        }
+
+        .network-info code {
+            background: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #667eea;
+            font-family: 'Courier New', monospace;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f0f0f0;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .timer {
+            display: inline-block;
+            color: #ff6b6b;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+
+        @media (max-width: 600px) {
+            .card {
+                padding: 20px;
+            }
+
+            h1 {
+                font-size: 20px;
+            }
+
+            .tabs {
+                flex-wrap: wrap;
+            }
+
+            .tab-button {
+                padding: 10px 15px;
+                font-size: 13px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>📱 Device Pairing</h1>
+            <p class="subtitle">Connect multiple devices to transfer files simultaneously</p>
+
+            <div class="tabs">
+                <button class="tab-button active" onclick="switchTab('qr-tab')">QR Code</button>
+                <button class="tab-button" onclick="switchTab('ip-tab')">Manual IP</button>
+                <button class="tab-button" onclick="switchTab('devices-tab')">Paired Devices</button>
+            </div>
+
+            <!-- QR Code Tab -->
+            <div id="qr-tab" class="tab-content active">
+                <div class="qr-container">
+                    <div id="qrCode"></div>
+                </div>
+                <div id="qrStatus" class="status info" style="display: none;"></div>
+                <button class="btn-primary" onclick="generateQRCode()">
+                    Generate QR Code
+                </button>
+                <p style="color: #999; font-size: 13px; margin-top: 15px; text-align: center;">
+                    Scan this code with another device to pair instantly
+                </p>
+            </div>
+
+            <!-- IP Pairing Tab -->
+            <div id="ip-tab" class="tab-content">
+                <div id="networkInfo" class="network-info"></div>
+                
+                <div class="input-group">
+                    <label for="deviceIP">Device IP Address</label>
+                    <input type="text" id="deviceIP" placeholder="192.168.1.100">
+                </div>
+
+                <div class="input-group">
+                    <label for="devicePort">Port (Default: 3000)</label>
+                    <input type="number" id="devicePort" placeholder="3000" value="3000">
+                </div>
+
+                <div class="input-group">
+                    <label for="deviceNameIP">Device Name</label>
+                    <input type="text" id="deviceNameIP" placeholder="My Android Phone">
+                </div>
+
+                <div id="ipStatus" class="status info" style="display: none;"></div>
+
+                <button class="btn-primary" onclick="pairByIP()">Pair by IP</button>
+            </div>
+
+            <!-- Paired Devices Tab -->
+            <div id="devices-tab" class="tab-content">
+                <div id="deviceList" class="device-list">
+                    <p style="color: #999; text-align: center; padding: 20px;">No paired devices yet</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 15px;">💡 How to Use</h2>
+            <ol style="color: #666; font-size: 13px; line-height: 1.8; margin-left: 20px;">
+                <li><strong>QR Code Method:</strong> Click "Generate QR Code" and scan it with other devices</li>
+                <li><strong>IP Method:</strong> Enter the IP and port of another device manually</li>
+                <li>Once paired, devices can share files instantly</li>
+                <li>Multiple devices can be paired simultaneously</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const CONFIG = {
+            API_BASE: '/api',
+            POLL_INTERVAL: 5000
+        };
+
+        // State
+        const state = {
+            currentQRCode: null,
+            pairedDevices: []
+        };
+
+        // Tab switching
+        function switchTab(tabId) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabId).classList.add('active');
+            event.target.classList.add('active');
+
+            if (tabId === 'devices-tab') {
+                loadPairedDevices();
+            } else if (tabId === 'ip-tab') {
+                loadNetworkInfo();
+            }
+        }
+
+        // Generate QR Code
+        async function generateQRCode() {
+            try {
+                const btn = event.target;
+                btn.disabled = true;
+                btn.innerHTML = '<span class="loading"></span>Generating...';
+
+                const response = await fetch(`${CONFIG.API_BASE}/qr/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ deviceName: 'Device' })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    state.currentQRCode = data;
+                    document.getElementById('qrCode').innerHTML = `<img src="${data.qrCode}" alt="QR Code" style="width: 250px; height: 250px;">`;
+                    
+                    showStatus('qrStatus', `QR Code generated! Expires in ${data.expiresIn} seconds`, 'info');
+
+                    // Start countdown
+                    let remaining = data.expiresIn;
+                    const timer = setInterval(() => {
+                        remaining--;
+                        if (remaining <= 0) {
+                            clearInterval(timer);
+                            showStatus('qrStatus', 'QR Code expired. Generate a new one.', 'error');
+                        }
+                    }, 1000);
+                } else {
+                    showStatus('qrStatus', 'Failed to generate QR code', 'error');
+                }
+            } catch (error) {
+                console.error('QR generation error:', error);
+                showStatus('qrStatus', 'Error: ' + error.message, 'error');
+            } finally {
+                event.target.disabled = false;
+                event.target.innerHTML = 'Generate QR Code';
+            }
+        }
+
+        // Pair by IP
+        async function pairByIP() {
+            try {
+                const ip = document.getElementById('deviceIP').value;
+                const port = document.getElementById('devicePort').value || 3000;
+                const deviceName = document.getElementById('deviceNameIP').value;
+
+                if (!ip) {
+                    showStatus('ipStatus', 'Please enter device IP address', 'error');
+                    return;
+                }
+
+                const btn = event.target;
+                btn.disabled = true;
+                btn.innerHTML = '<span class="loading"></span>Pairing...';
+
+                const response = await fetch(`${CONFIG.API_BASE}/qr/pair-by-ip`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ip,
+                        port: parseInt(port),
+                        clientId: generateClientId(),
+                        deviceName: deviceName || `Device at ${ip}`
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showStatus('ipStatus', '✓ Device paired successfully!', 'success');
+                    document.getElementById('deviceIP').value = '';
+                    document.getElementById('deviceNameIP').value = '';
+                    
+                    setTimeout(() => loadPairedDevices(), 1000);
+                } else {
+                    showStatus('ipStatus', 'Failed to pair: ' + (data.error || 'Unknown error'), 'error');
+                }
+            } catch (error) {
+                console.error('IP pairing error:', error);
+                showStatus('ipStatus', 'Error: ' + error.message, 'error');
+            } finally {
+                event.target.disabled = false;
+                event.target.innerHTML = 'Pair by IP';
+            }
+        }
+
+        // Load network info
+        async function loadNetworkInfo() {
+            try {
+                const response = await fetch(`${CONFIG.API_BASE}/network-info`);
+                const data = await response.json();
+
+                let html = `
+                    <p><strong>Local IP:</strong> <code>${data.localhost}</code></p>
+                    <p><strong>Port:</strong> <code>${data.port}</code></p>
+                    <p><strong>Hostname:</strong> <code>${data.hostname}</code></p>
+                    <p><strong>Available Networks:</strong></p>
+                `;
+
+                data.networks.forEach(net => {
+                    html += `<p style="margin-left: 20px;">• ${net.interface}: <code>${net.ip}</code></p>`;
+                });
+
+                document.getElementById('networkInfo').innerHTML = html;
+            } catch (error) {
+                console.error('Network info error:', error);
+            }
+        }
+
+        // Load paired devices
+        async function loadPairedDevices() {
+            try {
+                const response = await fetch(`${CONFIG.API_BASE}/qr/devices`);
+                const data = await response.json();
+
+                const deviceList = document.getElementById('deviceList');
+
+                if (data.devices.length === 0) {
+                    deviceList.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No paired devices yet</p>';
+                    return;
+                }
+
+                let html = '';
+                data.devices.forEach(device => {
+                    html += `
+                        <div class="device-item">
+                            <div class="device-info">
+                                <h3>${device.deviceName}</h3>
+                                <p>${device.ip}:${device.port}</p>
+                                <p>Paired ${formatTime(device.pairedAt)}</p>
+                            </div>
+                            <button class="btn-unpair" onclick="unpairDevice('${device.clientId}')">
+                                Unpair
+                            </button>
+                        </div>
+                    `;
+                });
+
+                deviceList.innerHTML = html;
+            } catch (error) {
+                console.error('Load devices error:', error);
+            }
+        }
+
+        // Unpair device
+        async function unpairDevice(clientId) {
+            if (!confirm('Are you sure you want to unpair this device?')) return;
+
+            try {
+                const response = await fetch(`${CONFIG.API_BASE}/qr/unpair`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ clientId })
+                });
+
+                if (response.ok) {
+                    loadPairedDevices();
+                }
+            } catch (error) {
+                console.error('Unpair error:', error);
+            }
+        }
+
+        // Helper functions
+        function showStatus(elementId, message, type) {
+            const el = document.getElementById(elementId);
+            el.className = `status ${type}`;
+            el.textContent = message;
+            el.style.display = 'block';
+        }
+
+        function generateClientId() {
+            return 'client-' + Math.random().toString(36).substr(2, 9);
+        }
+
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+        }
+
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadNetworkInfo();
+        });
+    </script>
+</body>
+</html>
