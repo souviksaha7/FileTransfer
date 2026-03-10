@@ -1,9 +1,42 @@
-const { app, BrowserWindow, Menu, dialog } = require('electron');
+const { app, BrowserWindow, Menu, dialog, session } = require('electron');
 const isDev = require('electron-is-dev');
 const path = require('path');
 const { spawn } = require('child_process');
 let mainWindow;
 let serverProcess;
+
+function isLocalAppURL(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    const isHttp = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    const isLocalHost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1';
+    return isHttp && isLocalHost;
+  } catch {
+    return false;
+  }
+}
+
+function configureMediaPermissions() {
+  const defaultSession = session.defaultSession;
+  if (!defaultSession) {
+    return;
+  }
+
+  defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    const allowCamera = (permission === 'media' || permission === 'camera') && isLocalAppURL(webContents.getURL());
+    callback(allowCamera);
+  });
+
+  if (typeof defaultSession.setPermissionCheckHandler === 'function') {
+    defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+      if (permission !== 'media' && permission !== 'camera') {
+        return false;
+      }
+
+      return isLocalAppURL(requestingOrigin || webContents.getURL());
+    });
+  }
+}
 
 // Start Node.js server
 function startServer() {
@@ -54,6 +87,7 @@ function createWindow() {
 
 app.on('ready', async () => {
   await startServer();
+  configureMediaPermissions();
   createWindow();
   createMenu();
 });

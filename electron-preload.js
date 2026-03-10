@@ -1,6 +1,7 @@
-const { contextBridge, ipcMain } = require('electron');
+const { contextBridge } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  isElectron: true,
   getVersion: () => process.versions.electron,
   getNodeVersion: () => process.versions.node,
   getPlatform: () => process.platform,

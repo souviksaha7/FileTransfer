@@ -33,29 +33,64 @@
 
     <div class="container">
         <!-- Header -->
-        <header class="header">
-            <div class="header-content">
-                <h1>⚡ Ultra-Fast File Transfer</h1>
-                <p class="subtitle">Transfer files at lightning speed over WiFi & Bluetooth</p>
+        <header class="header" aria-labelledby="dashboardTitle">
+            <div class="header-row header-row-top">
+                <div class="header-brand">
+                    <span class="header-brand-icon" aria-hidden="true">⚡</span>
+                    <div class="header-brand-copy">
+                        <h1 id="dashboardTitle">Ultra-Fast File Transfer</h1>
+                        <p class="subtitle">Transfer files at lightning speed over WiFi & Bluetooth</p>
+                    </div>
+                </div>
+                <nav class="header-quick-actions" aria-label="Dashboard actions">
+                    <a class="header-quick-btn header-qr-btn" href="/qr-pairing.html">📷 Connect with QR / Camera</a>
+                    <a class="header-quick-btn" href="#uploadSection">Upload</a>
+                    <a class="header-quick-btn" href="#sharedFilesSection">Shared Files</a>
+                </nav>
             </div>
-            <div class="status-bar">
-                <div class="status-item">
-                    <span class="status-icon wifi-icon">📡</span>
+            <div class="header-row header-row-actions status-bar header-controls">
+                <div class="status-item status-item-wifi">
+                    <span class="status-icon wifi-icon" aria-hidden="true">📡</span>
                     <span id="wifiStatus">WiFi: Ready</span>
                 </div>
-                <div class="status-item">
-                    <span class="status-icon bluetooth-icon" id="bluetoothIcon">🔵</span>
-                    <span id="bluetoothStatus">Bluetooth: Disabled</span>
+                <div class="status-item status-item-bluetooth" id="bluetoothControl">
+                    <button id="bluetoothBtn" type="button" class="btn btn-bluetooth btn-bluetooth-inline">Enable Bluetooth</button>
+                    <span class="bluetooth-live-status" id="bluetoothLiveStatus" hidden>
+                        <span class="status-icon bluetooth-icon" id="bluetoothIcon" aria-hidden="true">🟢</span>
+                        <span id="bluetoothStatus">Bluetooth: Enabled</span>
+                    </span>
                 </div>
-                <div class="status-item">
-                    <button class="logout-btn" onclick="logout()">🚪 Logout</button>
-                </div>
+                <button class="logout-btn" type="button" onclick="logout()">🚪 Logout</button>
             </div>
         </header>
 
+        <section class="private-sharing-panel" aria-labelledby="privateSharingTitle">
+            <div class="private-sharing-header">
+                <div class="private-sharing-title-wrap">
+                    <div class="private-sharing-title-row">
+                        <span class="private-sharing-icon" aria-hidden="true">🔐</span>
+                        <h2 id="privateSharingTitle">Private Sharing</h2>
+                    </div>
+                    <p class="private-sharing-description">Protect sensitive files with your custom key before sharing.</p>
+                </div>
+                <label class="private-toggle">
+                    <span>Enable Private Upload</span>
+                    <input type="checkbox" id="privateSharingToggle">
+                </label>
+            </div>
+            <div class="private-sharing-body">
+                <input type="password" id="privateSharingKey" placeholder="Enter your custom private sharing key">
+                <div class="private-sharing-actions">
+                    <button id="applyPrivateKeyBtn" type="button" class="btn-private">Apply Key</button>
+                    <button id="clearPrivateKeyBtn" type="button" class="btn-private-clear">Clear Key</button>
+                </div>
+                <p id="privateSharingStatus" class="private-status locked">Private files are locked. Enter your key to unlock and download them.</p>
+            </div>
+        </section>
+
         <main class="main-content">
             <!-- Upload Section -->
-            <section class="upload-section">
+            <section class="upload-section" id="uploadSection">
                 <h2>📤 Upload Files</h2>
                 
                 <div class="upload-area" id="uploadArea">
@@ -103,7 +138,7 @@
             </section>
 
             <!-- Files List Section -->
-            <section class="files-section">
+            <section class="files-section" id="sharedFilesSection">
                 <h2>📁 Shared Files</h2>
                 <div id="filesList" class="files-list">
                     <p class="empty-message">No files yet. Upload some to get started!</p>
@@ -139,19 +174,14 @@
                 <div id="connectionInfo" class="info-box">
                     <p>Loading connection information...</p>
                 </div>
+                <div class="pairing-actions">
+                    <a class="btn-pairing" href="/qr-pairing.html">
+                        📷 Connect with QR / Camera
+                    </a>
+                </div>
             </section>
         </main>
 
-        <!-- Bluetooth Control -->
-        <aside class="bluetooth-panel">
-            <h3>🔵 Bluetooth Control</h3>
-            <p class="description">Enable Bluetooth for simultaneous dual-channel transfers</p>
-            <button id="bluetoothBtn" class="btn btn-bluetooth">Enable Bluetooth</button>
-            <div id="bluetoothInfo" class="bluetooth-info" style="display: none;">
-                <p class="success">✓ Bluetooth enabled for parallel transfers</p>
-                <p class="info-text">Transfers now use both WiFi and Bluetooth channels for maximum speed</p>
-            </div>
-        </aside>
     </div>
 
     <!-- Toast Notifications -->

@@ -23,7 +23,7 @@
 
         .container {
             width: 100%;
-            max-width: 500px;
+            max-width: 640px;
         }
 
         .card {
@@ -32,6 +32,20 @@
             box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
             padding: 30px;
             margin-bottom: 20px;
+        }
+
+        .header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .back-link {
+            color: #667eea;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
         }
 
         h1 {
@@ -51,6 +65,8 @@
             gap: 10px;
             margin-bottom: 30px;
             border-bottom: 2px solid #f0f0f0;
+            overflow-x: auto;
+            padding-bottom: 4px;
         }
 
         .tab-button {
@@ -63,6 +79,7 @@
             font-size: 14px;
             font-weight: 500;
             transition: all 0.3s ease;
+            white-space: nowrap;
         }
 
         .tab-button.active {
@@ -87,9 +104,23 @@
         }
 
         #qrCode {
-            display: inline-block;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 252px;
+            height: 252px;
             padding: 10px;
             background: white;
+            border-radius: 8px;
+            border: 1px solid #ebebeb;
+            color: #888;
+            font-size: 13px;
+            text-align: center;
+        }
+
+        #qrCode img {
+            width: 250px;
+            height: 250px;
             border-radius: 8px;
         }
 
@@ -97,6 +128,7 @@
             display: flex;
             gap: 10px;
             margin-bottom: 20px;
+            flex-wrap: wrap;
         }
 
         button {
@@ -179,7 +211,8 @@
         }
 
         input[type="text"],
-        input[type="number"] {
+        input[type="number"],
+        select {
             width: 100%;
             padding: 12px;
             border: 2px solid #f0f0f0;
@@ -189,7 +222,8 @@
         }
 
         input[type="text"]:focus,
-        input[type="number"]:focus {
+        input[type="number"]:focus,
+        select:focus {
             outline: none;
             border-color: #667eea;
         }
@@ -240,6 +274,75 @@
             font-family: 'Courier New', monospace;
         }
 
+        .link-box {
+            background: #f9f9f9;
+            border: 1px solid #ececec;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 20px;
+        }
+
+        .link-box p {
+            color: #444;
+            font-size: 13px;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        .link-box code {
+            display: block;
+            background: white;
+            border: 1px solid #ececec;
+            border-radius: 6px;
+            padding: 9px;
+            color: #5568d3;
+            font-size: 12px;
+            line-height: 1.4;
+            word-break: break-all;
+            font-family: Consolas, 'Courier New', monospace;
+        }
+
+        .scanner-wrapper {
+            position: relative;
+            background: #111;
+            border-radius: 10px;
+            overflow: hidden;
+            aspect-ratio: 4 / 3;
+            margin-bottom: 20px;
+        }
+
+        #scannerVideo {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            background: #111;
+        }
+
+        .scanner-overlay {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            border: 2px solid rgba(255, 255, 255, 0.24);
+        }
+
+        .scanner-overlay::after {
+            content: "";
+            position: absolute;
+            left: 12%;
+            right: 12%;
+            top: 50%;
+            border-top: 2px dashed rgba(0, 255, 170, 0.9);
+            transform: translateY(-50%);
+        }
+
+        .hint {
+            color: #777;
+            font-size: 13px;
+            margin-top: 5px;
+            text-align: center;
+        }
+
         .loading {
             display: inline-block;
             width: 20px;
@@ -279,33 +382,96 @@
                 padding: 10px 15px;
                 font-size: 13px;
             }
+
+            .button-group {
+                flex-direction: column;
+            }
+
+            button {
+                width: 100%;
+            }
+
+            #qrCode {
+                width: 220px;
+                height: 220px;
+            }
+
+            #qrCode img {
+                width: 218px;
+                height: 218px;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="card">
-            <h1>📱 Device Pairing</h1>
+            <div class="header-row">
+                <h1>📱 Device Pairing</h1>
+                <a class="back-link" href="/">Back to Transfer</a>
+            </div>
             <p class="subtitle">Connect multiple devices to transfer files simultaneously</p>
 
             <div class="tabs">
-                <button class="tab-button active" onclick="switchTab('qr-tab')">QR Code</button>
-                <button class="tab-button" onclick="switchTab('ip-tab')">Manual IP</button>
-                <button class="tab-button" onclick="switchTab('devices-tab')">Paired Devices</button>
+                <button id="tab-qr" class="tab-button active" onclick="switchTab('qr-tab', this)">Show QR</button>
+                <button id="tab-scan" class="tab-button" onclick="switchTab('scan-tab', this)">Scan QR</button>
+                <button id="tab-ip" class="tab-button" onclick="switchTab('ip-tab', this)">Manual IP</button>
+                <button id="tab-devices" class="tab-button" onclick="switchTab('devices-tab', this)">Paired Devices</button>
             </div>
 
             <!-- QR Code Tab -->
             <div id="qr-tab" class="tab-content active">
+                <div class="input-group">
+                    <label for="deviceNameQR">Device Name</label>
+                    <input type="text" id="deviceNameQR" placeholder="My Laptop">
+                </div>
                 <div class="qr-container">
-                    <div id="qrCode"></div>
+                    <div id="qrCode">Generate QR to connect devices</div>
                 </div>
                 <div id="qrStatus" class="status info" style="display: none;"></div>
-                <button class="btn-primary" onclick="generateQRCode()">
-                    Generate QR Code
-                </button>
-                <p style="color: #999; font-size: 13px; margin-top: 15px; text-align: center;">
-                    Scan this code with another device to pair instantly
-                </p>
+
+                <div class="button-group">
+                    <button id="generateQrBtn" class="btn-primary" onclick="generateQRCode()">
+                        Generate QR Code
+                    </button>
+                    <button id="copyQrBtn" class="btn-secondary" onclick="copyQRLink()" disabled>
+                        Copy Link
+                    </button>
+                </div>
+
+                <div id="qrLinkBox" class="link-box" style="display: none;">
+                    <p>Pairing Link</p>
+                    <code id="qrLink"></code>
+                </div>
+                <p class="hint">Scan this QR from another device to open and connect instantly.</p>
+            </div>
+
+            <!-- Scan QR Tab -->
+            <div id="scan-tab" class="tab-content">
+                <div class="input-group">
+                    <label for="cameraSelect">Camera</label>
+                    <select id="cameraSelect"></select>
+                </div>
+
+                <div class="button-group">
+                    <button id="startScanBtn" class="btn-primary" onclick="startScanner()">Start Camera Scan</button>
+                    <button id="stopScanBtn" class="btn-secondary" onclick="stopScanner()" disabled>Stop Camera</button>
+                    <button id="scanImageBtn" class="btn-secondary" onclick="openImageScanner()">Scan QR Image</button>
+                </div>
+
+                <input type="file" id="qrImageInput" accept="image/*" capture="environment" style="display: none;">
+
+                <div class="scanner-wrapper">
+                    <video id="scannerVideo" autoplay muted playsinline></video>
+                    <div class="scanner-overlay"></div>
+                </div>
+
+                <div id="scanStatus" class="status info" style="display: none;"></div>
+
+                <div id="scanActions" class="button-group" style="display: none;">
+                    <button class="btn-primary" onclick="openConnectedHost()">Open Connected Device</button>
+                </div>
+                <p class="hint">Allow camera access, then point to QR code. If camera is blocked, use "Scan QR Image" from gallery/camera.</p>
             </div>
 
             <!-- IP Pairing Tab -->
@@ -314,7 +480,7 @@
                 
                 <div class="input-group">
                     <label for="deviceIP">Device IP Address</label>
-                    <input type="text" id="deviceIP" placeholder="192.168.1.100">
+                    <input type="text" id="deviceIP" placeholder="192.168.1.100 or 192.168.1.100:3000">
                 </div>
 
                 <div class="input-group">
@@ -329,7 +495,7 @@
 
                 <div id="ipStatus" class="status info" style="display: none;"></div>
 
-                <button class="btn-primary" onclick="pairByIP()">Pair by IP</button>
+                <button id="pairIpBtn" class="btn-primary" onclick="pairByIP()">Pair by IP</button>
             </div>
 
             <!-- Paired Devices Tab -->
@@ -343,235 +509,14 @@
         <div class="card">
             <h2 style="margin-bottom: 15px;">💡 How to Use</h2>
             <ol style="color: #666; font-size: 13px; line-height: 1.8; margin-left: 20px;">
-                <li><strong>QR Code Method:</strong> Click "Generate QR Code" and scan it with other devices</li>
-                <li><strong>IP Method:</strong> Enter the IP and port of another device manually</li>
-                <li>Once paired, devices can share files instantly</li>
-                <li>Multiple devices can be paired simultaneously</li>
+                <li>On sender device, open <strong>Show QR</strong> and generate code.</li>
+                <li>On receiver device, open <strong>Scan QR</strong> and allow camera access.</li>
+                <li>After scan, receiver opens pairing page and auto-connects.</li>
+                <li>Use <strong>Back to Transfer</strong> and share files.</li>
             </ol>
         </div>
     </div>
 
-    <script>
-        // Configuration
-        const CONFIG = {
-            API_BASE: '/api',
-            POLL_INTERVAL: 5000
-        };
-
-        // State
-        const state = {
-            currentQRCode: null,
-            pairedDevices: []
-        };
-
-        // Tab switching
-        function switchTab(tabId) {
-            // Hide all tabs
-            document.querySelectorAll('.tab-content').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            document.querySelectorAll('.tab-button').forEach(btn => {
-                btn.classList.remove('active');
-            });
-
-            // Show selected tab
-            document.getElementById(tabId).classList.add('active');
-            event.target.classList.add('active');
-
-            if (tabId === 'devices-tab') {
-                loadPairedDevices();
-            } else if (tabId === 'ip-tab') {
-                loadNetworkInfo();
-            }
-        }
-
-        // Generate QR Code
-        async function generateQRCode() {
-            try {
-                const btn = event.target;
-                btn.disabled = true;
-                btn.innerHTML = '<span class="loading"></span>Generating...';
-
-                const response = await fetch(`${CONFIG.API_BASE}/qr/generate`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ deviceName: 'Device' })
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    state.currentQRCode = data;
-                    document.getElementById('qrCode').innerHTML = `<img src="${data.qrCode}" alt="QR Code" style="width: 250px; height: 250px;">`;
-                    
-                    showStatus('qrStatus', `QR Code generated! Expires in ${data.expiresIn} seconds`, 'info');
-
-                    // Start countdown
-                    let remaining = data.expiresIn;
-                    const timer = setInterval(() => {
-                        remaining--;
-                        if (remaining <= 0) {
-                            clearInterval(timer);
-                            showStatus('qrStatus', 'QR Code expired. Generate a new one.', 'error');
-                        }
-                    }, 1000);
-                } else {
-                    showStatus('qrStatus', 'Failed to generate QR code', 'error');
-                }
-            } catch (error) {
-                console.error('QR generation error:', error);
-                showStatus('qrStatus', 'Error: ' + error.message, 'error');
-            } finally {
-                event.target.disabled = false;
-                event.target.innerHTML = 'Generate QR Code';
-            }
-        }
-
-        // Pair by IP
-        async function pairByIP() {
-            try {
-                const ip = document.getElementById('deviceIP').value;
-                const port = document.getElementById('devicePort').value || 3000;
-                const deviceName = document.getElementById('deviceNameIP').value;
-
-                if (!ip) {
-                    showStatus('ipStatus', 'Please enter device IP address', 'error');
-                    return;
-                }
-
-                const btn = event.target;
-                btn.disabled = true;
-                btn.innerHTML = '<span class="loading"></span>Pairing...';
-
-                const response = await fetch(`${CONFIG.API_BASE}/qr/pair-by-ip`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        ip,
-                        port: parseInt(port),
-                        clientId: generateClientId(),
-                        deviceName: deviceName || `Device at ${ip}`
-                    })
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    showStatus('ipStatus', '✓ Device paired successfully!', 'success');
-                    document.getElementById('deviceIP').value = '';
-                    document.getElementById('deviceNameIP').value = '';
-                    
-                    setTimeout(() => loadPairedDevices(), 1000);
-                } else {
-                    showStatus('ipStatus', 'Failed to pair: ' + (data.error || 'Unknown error'), 'error');
-                }
-            } catch (error) {
-                console.error('IP pairing error:', error);
-                showStatus('ipStatus', 'Error: ' + error.message, 'error');
-            } finally {
-                event.target.disabled = false;
-                event.target.innerHTML = 'Pair by IP';
-            }
-        }
-
-        // Load network info
-        async function loadNetworkInfo() {
-            try {
-                const response = await fetch(`${CONFIG.API_BASE}/network-info`);
-                const data = await response.json();
-
-                let html = `
-                    <p><strong>Local IP:</strong> <code>${data.localhost}</code></p>
-                    <p><strong>Port:</strong> <code>${data.port}</code></p>
-                    <p><strong>Hostname:</strong> <code>${data.hostname}</code></p>
-                    <p><strong>Available Networks:</strong></p>
-                `;
-
-                data.networks.forEach(net => {
-                    html += `<p style="margin-left: 20px;">• ${net.interface}: <code>${net.ip}</code></p>`;
-                });
-
-                document.getElementById('networkInfo').innerHTML = html;
-            } catch (error) {
-                console.error('Network info error:', error);
-            }
-        }
-
-        // Load paired devices
-        async function loadPairedDevices() {
-            try {
-                const response = await fetch(`${CONFIG.API_BASE}/qr/devices`);
-                const data = await response.json();
-
-                const deviceList = document.getElementById('deviceList');
-
-                if (data.devices.length === 0) {
-                    deviceList.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No paired devices yet</p>';
-                    return;
-                }
-
-                let html = '';
-                data.devices.forEach(device => {
-                    html += `
-                        <div class="device-item">
-                            <div class="device-info">
-                                <h3>${device.deviceName}</h3>
-                                <p>${device.ip}:${device.port}</p>
-                                <p>Paired ${formatTime(device.pairedAt)}</p>
-                            </div>
-                            <button class="btn-unpair" onclick="unpairDevice('${device.clientId}')">
-                                Unpair
-                            </button>
-                        </div>
-                    `;
-                });
-
-                deviceList.innerHTML = html;
-            } catch (error) {
-                console.error('Load devices error:', error);
-            }
-        }
-
-        // Unpair device
-        async function unpairDevice(clientId) {
-            if (!confirm('Are you sure you want to unpair this device?')) return;
-
-            try {
-                const response = await fetch(`${CONFIG.API_BASE}/qr/unpair`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ clientId })
-                });
-
-                if (response.ok) {
-                    loadPairedDevices();
-                }
-            } catch (error) {
-                console.error('Unpair error:', error);
-            }
-        }
-
-        // Helper functions
-        function showStatus(elementId, message, type) {
-            const el = document.getElementById(elementId);
-            el.className = `status ${type}`;
-            el.textContent = message;
-            el.style.display = 'block';
-        }
-
-        function generateClientId() {
-            return 'client-' + Math.random().toString(36).substr(2, 9);
-        }
-
-        function formatTime(timestamp) {
-            const date = new Date(timestamp);
-            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
-        }
-
-        // Initialize on load
-        document.addEventListener('DOMContentLoaded', () => {
-            loadNetworkInfo();
-        });
-    </script>
+    <script src="qr-pairing.js"></script>
 </body>
 </html>

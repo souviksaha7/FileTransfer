@@ -3,17 +3,23 @@ const CONFIG = {
     API_BASE: '/api',
     CHUNK_SIZE: 1024 * 1024, // 1MB chunks
     TRANSFER_TIMEOUT: 30000,
-    WS_RECONNECT_DELAY: 3000
+    WS_RECONNECT_DELAY: 3000,
+    PRIVATE_PBKDF2_ITERATIONS: 250000,
+    PRIVATE_MAX_FILE_SIZE: 512 * 1024 * 1024 // 512MB
 };
 
 // Get auth token
 const getAuthToken = () => localStorage.getItem('authToken') || '';
+const PRIVATE_MODE_STORAGE_KEY = 'privateSharingModeEnabled';
 
 // Add auth header to requests
-const getHeaders = (includeAuth = true) => {
+const getHeaders = (includeAuth = true, includePrivateDigest = true) => {
     const headers = { 'Content-Type': 'application/json' };
     if (includeAuth) {
         headers['X-Auth-Token'] = getAuthToken();
+    }
+    if (includePrivateDigest && state.privateSharing.keyDigest) {
+        headers['X-Private-Key-Digest'] = state.privateSharing.keyDigest;
     }
     return headers;
 };
@@ -39,7 +45,134 @@ const state = {
     bluetoothEnabled: false,
     activeTransfers: 0,
     wifiUsage: 100,
-    bluetoothUsage: 0
+    bluetoothUsage: 0,
+    privateSharing: {
+        enabled: false,
+        key: '',
+        keyDigest: '',
+        unlocked: false
+    }
+};
+
+const encoder = new TextEncoder();
+
+const normalizePrivateKey = (value) => String(value || '').trim();
+
+const toBase64 = (value) => {
+    const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : value;
+    let binary = '';
+    bytes.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+    });
+    return btoa(binary);
+};
+
+const fromBase64 = (value) => {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+};
+
+const derivePrivateAesKey = async (privateKey, salt, iterations) => {
+    const material = await crypto.subtle.importKey(
+        'raw',
+        encoder.encode(privateKey),
+        'PBKDF2',
+        false,
+        ['deriveKey']
+    );
+
+    return crypto.subtle.deriveKey(
+        {
+            name: 'PBKDF2',
+            salt,
+            iterations,
+            hash: 'SHA-256'
+        },
+        material,
+        {
+            name: 'AES-GCM',
+            length: 256
+        },
+        false,
+        ['encrypt', 'decrypt']
+    );
+};
+
+const computePrivateKeyDigest = async (privateKey) => {
+    const digestBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(privateKey));
+    return toBase64(digestBuffer).replace(/=+$/g, '');
+};
+
+const ensurePrivateCryptoSupport = () => {
+    if (!window.crypto || !window.crypto.subtle || typeof window.crypto.getRandomValues !== 'function') {
+        throw new Error('This browser runtime does not support secure private encryption.');
+    }
+};
+
+const encryptFileForPrivateShare = async (file, privateKey) => {
+    ensurePrivateCryptoSupport();
+
+    if (file.size > CONFIG.PRIVATE_MAX_FILE_SIZE) {
+        const maxSizeLabel = formatFileSize(CONFIG.PRIVATE_MAX_FILE_SIZE);
+        throw new Error(`Private encrypted upload currently supports files up to ${maxSizeLabel}.`);
+    }
+
+    const salt = window.crypto.getRandomValues(new Uint8Array(16));
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const iterations = CONFIG.PRIVATE_PBKDF2_ITERATIONS;
+    const aesKey = await derivePrivateAesKey(privateKey, salt, iterations);
+    const plaintext = await file.arrayBuffer();
+    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, plaintext);
+    const keyDigest = await computePrivateKeyDigest(privateKey);
+
+    return {
+        encryptedBlob: new Blob([ciphertext], { type: 'application/octet-stream' }),
+        metadata: {
+            algorithm: 'AES-GCM',
+            originalName: file.name,
+            originalSize: file.size,
+            mimeType: file.type || 'application/octet-stream',
+            salt: toBase64(salt),
+            iv: toBase64(iv),
+            iterations,
+            keyDigest
+        }
+    };
+};
+
+const decryptPrivateFilePayload = async (encryptedBuffer, privateKey, metadata) => {
+    ensurePrivateCryptoSupport();
+
+    if (!metadata || !metadata.salt || !metadata.iv || !metadata.iterations) {
+        throw new Error('Missing private encryption metadata.');
+    }
+
+    const salt = fromBase64(metadata.salt);
+    const iv = fromBase64(metadata.iv);
+    const iterations = Number.parseInt(metadata.iterations, 10);
+    const aesKey = await derivePrivateAesKey(privateKey, salt, iterations);
+
+    try {
+        const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, encryptedBuffer);
+        return new Blob([plaintext], { type: metadata.mimeType || 'application/octet-stream' });
+    } catch {
+        throw new Error('Invalid private sharing key for this file.');
+    }
+};
+
+const triggerBrowserDownload = (blob, fileName) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
 // WebSocket connection
@@ -81,6 +214,9 @@ const handleWebSocketMessage = (message) => {
             addFileToList(message);
             showToast(`${message.fileName} uploaded successfully!`, 'success');
             break;
+        case 'file-deleted':
+            removeFileFromList(message.transferId);
+            break;
         case 'transfer-status':
             updateTransferStatus(message);
             break;
@@ -98,9 +234,12 @@ const handleWebSocketMessage = (message) => {
 // Initialize the application
 const initApp = async () => {
     connectWebSocket();
+    initializePrivateSharingState();
     loadConnectionInfo();
     setupEventListeners();
-    loadFilesList();
+    setBluetoothControlState(state.bluetoothEnabled, 'Bluetooth: Disabled');
+    updatePrivateSharingStatus();
+    await loadFilesList();
 };
 
 // Setup event listeners
@@ -108,6 +247,10 @@ const setupEventListeners = () => {
     const uploadArea = document.getElementById('uploadArea');
     const fileInput = document.getElementById('fileInput');
     const bluetoothBtn = document.getElementById('bluetoothBtn');
+    const privateToggle = document.getElementById('privateSharingToggle');
+    const privateKeyInput = document.getElementById('privateSharingKey');
+    const applyPrivateKeyBtn = document.getElementById('applyPrivateKeyBtn');
+    const clearPrivateKeyBtn = document.getElementById('clearPrivateKeyBtn');
 
     // Drag and drop
     uploadArea.addEventListener('click', () => fileInput.click());
@@ -134,19 +277,45 @@ const setupEventListeners = () => {
     });
 
     // Bluetooth control
-    bluetoothBtn.addEventListener('click', enableBluetooth);
+    if (bluetoothBtn) {
+        bluetoothBtn.addEventListener('click', enableBluetooth);
+    }
+
+    if (privateToggle) {
+        privateToggle.addEventListener('change', onPrivateModeToggle);
+    }
+
+    if (applyPrivateKeyBtn) {
+        applyPrivateKeyBtn.addEventListener('click', applyPrivateSharingKey);
+    }
+
+    if (clearPrivateKeyBtn) {
+        clearPrivateKeyBtn.addEventListener('click', clearPrivateSharingKey);
+    }
+
+    if (privateKeyInput) {
+        privateKeyInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                applyPrivateSharingKey();
+            }
+        });
+    }
 };
 
 // Handle file selection
 const handleFileSelection = async (files) => {
     for (const file of files) {
         try {
-            const useChunked = document.getElementById('chunkUpload').checked && file.size > 50 * 1024 * 1024;
+            const privateUpload = state.privateSharing.enabled;
+            const useChunked = !privateUpload
+                && document.getElementById('chunkUpload').checked
+                && file.size > 50 * 1024 * 1024;
 
             if (useChunked) {
                 await uploadFileChunked(file);
             } else {
-                await uploadFile(file);
+                await uploadFile(file, { privateUpload });
             }
         } catch (error) {
             console.error('File upload error:', error);
@@ -156,17 +325,43 @@ const handleFileSelection = async (files) => {
 };
 
 // Upload file (standard)
-const uploadFile = (file) => {
+const uploadFile = async (file, options = {}) => {
+    const privateUpload = Boolean(options.privateUpload);
+
+    if (privateUpload && !state.privateSharing.unlocked) {
+        throw new Error('Set and apply a private sharing key before private upload.');
+    }
+
+    let uploadBlob = file;
+    let uploadName = file.name;
+    let privateMeta = null;
+
+    if (privateUpload) {
+        document.getElementById('uploadProgress').style.display = 'block';
+        document.getElementById('progressFileName').textContent = `Encrypting: ${file.name}`;
+        updateProgressBar(0, 0, NaN);
+
+        const encrypted = await encryptFileForPrivateShare(file, state.privateSharing.key);
+        uploadBlob = encrypted.encryptedBlob;
+        uploadName = `${file.name}.enc`;
+        privateMeta = encrypted.metadata;
+    }
+
     return new Promise((resolve, reject) => {
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append('file', uploadBlob, uploadName);
+        if (privateMeta) {
+            formData.append('privateMeta', JSON.stringify(privateMeta));
+        }
 
         const xhr = new XMLHttpRequest();
         const startTime = Date.now();
 
         // Show progress
         document.getElementById('uploadProgress').style.display = 'block';
-        document.getElementById('progressFileName').textContent = `Uploading: ${file.name}`;
+        document.getElementById('progressFileName').textContent = privateUpload
+            ? `Uploading encrypted: ${file.name}`
+            : `Uploading: ${file.name}`;
 
         xhr.upload.addEventListener('progress', (e) => {
             if (e.lengthComputable) {
@@ -193,14 +388,27 @@ const uploadFile = (file) => {
         xhr.addEventListener('load', () => {
             if (xhr.status === 200) {
                 const response = JSON.parse(xhr.responseText);
-                state.files.set(response.transferId, {
+                addFileToList({
                     ...response,
-                    transferType: state.bluetoothEnabled ? 'WiFi + Bluetooth' : 'WiFi'
+                    name: response.fileName || response.name,
+                    transferType: response.transferType || (state.bluetoothEnabled ? 'WiFi + Bluetooth' : 'WiFi')
                 });
                 updateStats();
+                if (privateUpload) {
+                    showToast(`Private encrypted upload complete: ${file.name}`, 'success');
+                }
                 resolve(response);
             } else {
-                reject(new Error('Upload failed'));
+                let errorMessage = 'Upload failed';
+                try {
+                    const parsed = JSON.parse(xhr.responseText);
+                    if (parsed && parsed.error) {
+                        errorMessage = parsed.error;
+                    }
+                } catch {
+                    // Keep generic upload error.
+                }
+                reject(new Error(errorMessage));
             }
         });
 
@@ -337,26 +545,36 @@ const loadFilesList = async () => {
             headers: getHeaders()
         });
         const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Failed to load files');
+        }
 
         const filesList = document.getElementById('filesList');
         filesList.innerHTML = '';
+        state.files.clear();
 
         if (data.files.length === 0) {
-            filesList.innerHTML = '<p class="empty-message">No files yet. Upload some to get started!</p>';
+            filesList.innerHTML = getEmptyFilesMessage();
+            updateStats();
             return;
         }
 
         data.files.forEach(file => {
             addFileToList(file);
         });
+        updateStats();
     } catch (error) {
         console.error('Error loading files:', error);
-        showToast('Error loading files', 'error');
+        showToast(error.message || 'Error loading files', 'error');
     }
 };
 
 // Add file to list in UI
 const addFileToList = (file) => {
+    if (file.isPrivate && !state.privateSharing.unlocked) {
+        return;
+    }
+
     const filesList = document.getElementById('filesList');
 
     // Remove empty message if present
@@ -365,31 +583,44 @@ const addFileToList = (file) => {
         emptyMsg.remove();
     }
 
+    const existing = document.getElementById(`file-${file.transferId}`);
+    if (existing) {
+        existing.remove();
+    }
+
     const fileCard = document.createElement('div');
-    fileCard.className = 'file-card';
+    fileCard.className = `file-card ${file.isPrivate ? 'private-file' : ''}`;
     fileCard.id = `file-${file.transferId}`;
 
     const fileIcon = getFileIcon(file.name || file.fileName);
     const fileSize = formatFileSize(file.size);
-    const fileName = file.name || file.fileName;
+    const fileName = file.name || file.fileName || 'Unnamed file';
     const transferType = file.transferType || 'WiFi';
+    const safeFileName = escapeHTML(fileName);
+    const privateBadge = file.isPrivate ? '<span class="private-badge">Private</span>' : '';
+    const detailsSuffix = file.isPrivate ? ' • Encrypted (E2E)' : '';
+    const shareButton = file.isPrivate
+        ? ''
+        : `
+            <button class="btn-share" onclick="shareFile('${file.transferId}')" title="Generate share link">
+                🔗 Share
+            </button>
+        `;
 
     fileCard.innerHTML = `
         <div class="file-info-container">
             <div class="file-icon">${fileIcon}</div>
             <div class="file-details">
-                <h4>${fileName}</h4>
-                <p>${fileSize} • ${transferType}</p>
+                <h4>${safeFileName} ${privateBadge}</h4>
+                <p>${fileSize} • ${transferType}${detailsSuffix}</p>
             </div>
         </div>
         <div class="file-actions">
-            <button class="btn-download" onclick="downloadFile('${file.transferId}', '${fileName}')" title="Download file">
+            <button class="btn-download" onclick="downloadFile('${file.transferId}')" title="Download file">
                 ⬇️ Download
             </button>
-            <button class="btn-share" onclick="shareFile('${file.transferId}', '${fileName}')" title="Generate share link">
-                🔗 Share
-            </button>
-            <button class="btn-delete" onclick="deleteFile('${file.transferId}', '${fileName}')" title="Delete file">
+            ${shareButton}
+            <button class="btn-delete" onclick="deleteFile('${file.transferId}')" title="Delete file">
                 🗑️ Delete
             </button>
         </div>
@@ -399,9 +630,68 @@ const addFileToList = (file) => {
     state.files.set(file.transferId, file);
 };
 
+const removeFileFromList = (transferId) => {
+    const fileCard = document.getElementById(`file-${transferId}`);
+    if (fileCard) {
+        fileCard.remove();
+    }
+
+    state.files.delete(transferId);
+
+    const filesList = document.getElementById('filesList');
+    if (filesList && filesList.children.length === 0) {
+        filesList.innerHTML = getEmptyFilesMessage();
+    }
+
+    updateStats();
+};
+
 // Download file
-const downloadFile = async (transferId, fileName) => {
+const downloadFile = async (transferId) => {
+    const fileInfo = state.files.get(transferId);
+    const fileName = fileInfo && (fileInfo.name || fileInfo.fileName) ? (fileInfo.name || fileInfo.fileName) : 'file';
+
     try {
+        if (fileInfo && fileInfo.isPrivate) {
+            if (!state.privateSharing.unlocked || !state.privateSharing.key) {
+                showToast('Enter and apply your private sharing key to download this file.', 'warning');
+                return;
+            }
+
+            const response = await fetch(`${CONFIG.API_BASE}/download/${transferId}`, {
+                headers: getHeaders()
+            });
+
+            if (!response.ok) {
+                let serverError = 'Private download failed';
+                try {
+                    const errorData = await response.json();
+                    serverError = errorData.error || serverError;
+                } catch {
+                    // Ignore parse errors and keep generic message.
+                }
+                throw new Error(serverError);
+            }
+
+            const encryptedBuffer = await response.arrayBuffer();
+            const headerMetadata = response.headers.get('X-Private-File') === '1'
+                ? {
+                    algorithm: response.headers.get('X-Private-Enc-Algorithm') || 'AES-GCM',
+                    salt: response.headers.get('X-Private-Enc-Salt') || '',
+                    iv: response.headers.get('X-Private-Enc-Iv') || '',
+                    iterations: response.headers.get('X-Private-Enc-Iterations') || '',
+                    mimeType: response.headers.get('X-Private-Mime-Type') || 'application/octet-stream',
+                    originalSize: response.headers.get('X-Private-Original-Size') || 0
+                }
+                : null;
+
+            const metadata = fileInfo.encryption || headerMetadata;
+            const decryptedBlob = await decryptPrivateFilePayload(encryptedBuffer, state.privateSharing.key, metadata);
+            triggerBrowserDownload(decryptedBlob, fileName);
+            showToast(`Private file decrypted and downloaded: ${fileName}`, 'success');
+            return;
+        }
+
         const link = document.createElement('a');
         link.href = `${CONFIG.API_BASE}/download/${transferId}`;
         link.download = fileName;
@@ -409,57 +699,71 @@ const downloadFile = async (transferId, fileName) => {
         showToast(`Downloading: ${fileName}`, 'success');
     } catch (error) {
         console.error('Download error:', error);
-        showToast('Download failed', 'error');
+        showToast(error.message || 'Download failed', 'error');
     }
 };
 
 // Share file
-const shareFile = async (transferId, fileName) => {
+const shareFile = async (transferId) => {
+    const fileInfo = state.files.get(transferId);
+    const fileName = fileInfo && (fileInfo.name || fileInfo.fileName) ? (fileInfo.name || fileInfo.fileName) : 'file';
+
+    if (fileInfo && fileInfo.isPrivate) {
+        showToast('Private encrypted files cannot use public share links.', 'warning');
+        return;
+    }
+
     try {
         const response = await fetch(`${CONFIG.API_BASE}/files/${transferId}/share`, {
             headers: getHeaders()
         });
         const data = await response.json();
 
-        if (data.success) {
-            // Copy share URL to clipboard
-            await navigator.clipboard.writeText(data.shareUrl);
-            
-            // Show modal with share link
-            const shareModal = document.createElement('div');
-            shareModal.style.cssText = `
-                position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-                background: rgba(0,0,0,0.7); display: flex; align-items: center;
-                justify-content: center; z-index: 1000;
-            `;
-            
-            shareModal.innerHTML = `
-                <div style="background: white; border-radius: 12px; padding: 30px; max-width: 500px; width: 90%;">
-                    <h3 style="margin-bottom: 15px; color: #333;">Share File</h3>
-                    <p style="color: #666; margin-bottom: 15px;">Share link copied to clipboard!</p>
-                    <div style="background: #f5f5f5; padding: 12px; border-radius: 8px; margin-bottom: 20px; word-break: break-all; font-size: 14px;">
-                        ${data.shareUrl}
-                    </div>
-                    <p style="color: #999; font-size: 12px; margin-bottom: 20px;">
-                        Send this link to anyone to let them download <strong>${fileName}</strong>
-                    </p>
-                    <button onclick="this.parentElement.parentElement.remove()" style="background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; width: 100%;">
-                        ✅ Done
-                    </button>
-                </div>
-            `;
-            
-            document.body.appendChild(shareModal);
-            showToast('Share link copied to clipboard!', 'success');
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'Failed to generate share link');
         }
+
+        // Copy share URL to clipboard
+        await navigator.clipboard.writeText(data.shareUrl);
+        
+        // Show modal with share link
+        const shareModal = document.createElement('div');
+        const safeModalName = escapeHTML(fileName);
+        shareModal.style.cssText = `
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7); display: flex; align-items: center;
+            justify-content: center; z-index: 1000;
+        `;
+        
+        shareModal.innerHTML = `
+            <div style="background: white; border-radius: 12px; padding: 30px; max-width: 500px; width: 90%;">
+                <h3 style="margin-bottom: 15px; color: #333;">Share File</h3>
+                <p style="color: #666; margin-bottom: 15px;">Share link copied to clipboard!</p>
+                <div style="background: #f5f5f5; padding: 12px; border-radius: 8px; margin-bottom: 20px; word-break: break-all; font-size: 14px;">
+                    ${data.shareUrl}
+                </div>
+                <p style="color: #999; font-size: 12px; margin-bottom: 20px;">
+                    Send this link to anyone to let them download <strong>${safeModalName}</strong>
+                </p>
+                <button onclick="this.parentElement.parentElement.remove()" style="background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; width: 100%;">
+                    ✅ Done
+                </button>
+            </div>
+        `;
+        
+        document.body.appendChild(shareModal);
+        showToast('Share link copied to clipboard!', 'success');
     } catch (error) {
         console.error('Share error:', error);
-        showToast('Failed to generate share link', 'error');
+        showToast(error.message || 'Failed to generate share link', 'error');
     }
 };
 
 // Delete file with password protection
-const deleteFile = async (transferId, fileName) => {
+const deleteFile = async (transferId) => {
+    const fileInfo = state.files.get(transferId);
+    const fileName = fileInfo && (fileInfo.name || fileInfo.fileName) ? (fileInfo.name || fileInfo.fileName) : 'file';
+
     if (!confirm(`Are you sure you want to delete "${fileName}"? This action cannot be undone.`)) {
         return;
     }
@@ -498,21 +802,151 @@ const deleteFile = async (transferId, fileName) => {
 
 };
 
+const initializePrivateSharingState = () => {
+    state.privateSharing.enabled = localStorage.getItem(PRIVATE_MODE_STORAGE_KEY) === '1';
+    state.privateSharing.key = '';
+    state.privateSharing.keyDigest = '';
+    state.privateSharing.unlocked = false;
+
+    const privateToggle = document.getElementById('privateSharingToggle');
+    const keyInput = document.getElementById('privateSharingKey');
+    if (privateToggle) {
+        privateToggle.checked = false;
+    }
+    if (keyInput) {
+        keyInput.value = '';
+    }
+};
+
+const onPrivateModeToggle = (event) => {
+    const enabled = Boolean(event.target.checked);
+
+    if (enabled && !state.privateSharing.unlocked) {
+        event.target.checked = false;
+        state.privateSharing.enabled = false;
+        showToast('Apply a private sharing key first, then enable private upload mode.', 'warning');
+        updatePrivateSharingStatus();
+        return;
+    }
+
+    state.privateSharing.enabled = enabled;
+    localStorage.setItem(PRIVATE_MODE_STORAGE_KEY, enabled ? '1' : '0');
+    updatePrivateSharingStatus();
+};
+
+const applyPrivateSharingKey = async () => {
+    const input = document.getElementById('privateSharingKey');
+    if (!input) {
+        return;
+    }
+
+    const keyValue = normalizePrivateKey(input.value);
+    if (keyValue.length < 6) {
+        showToast('Private sharing key must be at least 6 characters.', 'warning');
+        return;
+    }
+
+    try {
+        const keyDigest = await computePrivateKeyDigest(keyValue);
+        state.privateSharing.key = keyValue;
+        state.privateSharing.keyDigest = keyDigest;
+        state.privateSharing.unlocked = true;
+
+        if (localStorage.getItem(PRIVATE_MODE_STORAGE_KEY) === '1') {
+            state.privateSharing.enabled = true;
+        }
+
+        const privateToggle = document.getElementById('privateSharingToggle');
+        if (privateToggle) {
+            privateToggle.checked = state.privateSharing.enabled;
+        }
+
+        updatePrivateSharingStatus();
+        await loadFilesList();
+        showToast('Private sharing key applied. Matching private files are now visible.', 'success');
+    } catch (error) {
+        console.error('Private key apply error:', error);
+        showToast('Failed to apply private sharing key.', 'error');
+    }
+};
+
+const clearPrivateSharingKey = async () => {
+    state.privateSharing.key = '';
+    state.privateSharing.keyDigest = '';
+    state.privateSharing.unlocked = false;
+    state.privateSharing.enabled = false;
+    localStorage.setItem(PRIVATE_MODE_STORAGE_KEY, '0');
+
+    const privateToggle = document.getElementById('privateSharingToggle');
+    const keyInput = document.getElementById('privateSharingKey');
+    if (privateToggle) {
+        privateToggle.checked = false;
+    }
+    if (keyInput) {
+        keyInput.value = '';
+    }
+
+    updatePrivateSharingStatus();
+    await loadFilesList();
+    showToast('Private sharing key cleared. Private files are hidden.', 'info');
+};
+
+const updatePrivateSharingStatus = () => {
+    const statusEl = document.getElementById('privateSharingStatus');
+    if (!statusEl) {
+        return;
+    }
+
+    if (!state.privateSharing.unlocked) {
+        statusEl.textContent = 'Private files are locked. Enter your key to unlock and download them.';
+        statusEl.className = 'private-status locked';
+        return;
+    }
+
+    if (state.privateSharing.enabled) {
+        statusEl.textContent = 'Private upload mode is ON. New files will be end-to-end encrypted.';
+        statusEl.className = 'private-status enabled';
+        return;
+    }
+
+    statusEl.textContent = 'Private key is active. Private files are unlocked. Enable private upload to encrypt new files.';
+    statusEl.className = 'private-status unlocked';
+};
+
+const getEmptyFilesMessage = () => {
+    if (!state.privateSharing.unlocked) {
+        return '<p class="empty-message">No public files visible. Private files stay hidden until you apply a private sharing key.</p>';
+    }
+    return '<p class="empty-message">No files yet. Upload some to get started!</p>';
+};
+
+const setBluetoothControlState = (enabled, enabledLabel = 'Bluetooth: Enabled') => {
+    const bluetoothBtn = document.getElementById('bluetoothBtn');
+    const bluetoothLiveStatus = document.getElementById('bluetoothLiveStatus');
+    const bluetoothStatus = document.getElementById('bluetoothStatus');
+    const bluetoothIcon = document.getElementById('bluetoothIcon');
+
+    if (bluetoothBtn) {
+        bluetoothBtn.hidden = enabled;
+    }
+
+    if (bluetoothLiveStatus) {
+        bluetoothLiveStatus.hidden = !enabled;
+    }
+
+    if (bluetoothStatus) {
+        bluetoothStatus.textContent = enabled ? enabledLabel : 'Bluetooth: Disabled';
+    }
+
+    if (bluetoothIcon) {
+        bluetoothIcon.textContent = enabled ? '🟢' : '🔵';
+    }
+};
+
 // Enable Bluetooth
 const enableBluetooth = () => {
     state.bluetoothEnabled = true;
-
-    const bluetoothBtn = document.getElementById('bluetoothBtn');
-    bluetoothBtn.style.display = 'none';
-
-    const bluetoothInfo = document.getElementById('bluetoothInfo');
-    bluetoothInfo.style.display = 'block';
-
-    const bluetoothStatus = document.getElementById('bluetoothStatus');
-    bluetoothStatus.textContent = '🔴 Bluetooth: Enabled';
-
-    const bluetoothIcon = document.getElementById('bluetoothIcon');
-    bluetoothIcon.textContent = '🟢';
+    setBluetoothControlState(true, 'Bluetooth: Enabled');
 
     // Send to server
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -528,15 +962,19 @@ const enableBluetooth = () => {
 const handleBluetoothStatus = (message) => {
     if (message.status === 'enabled') {
         state.bluetoothEnabled = true;
+        setBluetoothControlState(true, 'Bluetooth: Enabled');
         console.log('Bluetooth enabled for transfer');
+    } else if (message.status === 'disabled') {
+        state.bluetoothEnabled = false;
+        setBluetoothControlState(false, 'Bluetooth: Disabled');
     }
 };
 
 // Update system status
 const updateSystemStatus = (message) => {
-    if (message.bluetooth) {
-        const bluetoothStatus = document.getElementById('bluetoothStatus');
-        bluetoothStatus.textContent = '🟢 Bluetooth: Active';
+    if (typeof message.bluetooth === 'boolean') {
+        state.bluetoothEnabled = message.bluetooth;
+        setBluetoothControlState(message.bluetooth, message.bluetooth ? 'Bluetooth: Active' : 'Bluetooth: Disabled');
     }
 };
 
@@ -573,7 +1011,8 @@ const loadConnectionInfo = async () => {
         `;
 
         info.ipAddresses.forEach(ip => {
-            infoHTML += `<li><code>http://${ip.address}:${info.port}</code> (${ip.interface})</li>`;
+            const preferredLabel = ip.preferred ? ' • Recommended' : '';
+            infoHTML += `<li><code>http://${ip.address}:${info.port}</code> (${ip.interface}${preferredLabel})</li>`;
         });
 
         infoHTML += `
@@ -582,6 +1021,7 @@ const loadConnectionInfo = async () => {
             <ul style="margin: 0.5rem 0 0 1.5rem;">
                 <li>Mobile devices can connect using the IP address above</li>
                 <li>Bluetooth will enable simultaneous dual-channel transfer</li>
+                <li><a href="/qr-pairing.html" style="color: #34d399;">Open QR Pairing & Camera Scanner</a> for instant device connection</li>
             </ul>
         `;
 
@@ -609,6 +1049,14 @@ const updateStats = () => {
 };
 
 // Utility functions
+const escapeHTML = (value) => String(value || '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;'
+}[ch] || ch));
+
 const formatFileSize = (bytes) => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;

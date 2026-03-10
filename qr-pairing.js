@@ -1,10 +1,26 @@
 const QRCode = require('qrcode');
 const os = require('os');
+const net = require('net');
+const http = require('http');
 const { v4: uuidv4 } = require('uuid');
 
 // Store paired devices
 const pairedDevices = new Map();
 const pendingPairs = new Map();
+
+const VIRTUAL_INTERFACE_HINTS = [
+  'virtual',
+  'vmware',
+  'vbox',
+  'docker',
+  'hyper-v',
+  'wsl',
+  'vethernet',
+  'loopback',
+  'tailscale',
+  'tun',
+  'tap'
+];
 
 // Generate QR code data
 function generatePairingCode(deviceInfo) {
@@ -23,10 +39,158 @@ function generatePairingCode(deviceInfo) {
 }
 
 // Generate QR code image
-async function generateQRCode(pairingCode) {
-  const qrData = JSON.stringify(pairingCode);
+async function generateQRCode(pairingCodeOrData) {
+  const qrData = typeof pairingCodeOrData === 'string'
+    ? pairingCodeOrData
+    : JSON.stringify(pairingCodeOrData);
   const qrImage = await QRCode.toDataURL(qrData);
   return qrImage;
+}
+
+// Build URL payload for easy scan-and-connect
+function createPairingURL(pairingCode) {
+  const pairingUrl = new URL(`http://${pairingCode.ip}:${pairingCode.port}/qr-pairing.html`);
+  pairingUrl.searchParams.set('pairingCode', pairingCode.id);
+  pairingUrl.searchParams.set('deviceName', pairingCode.deviceName);
+  pairingUrl.searchParams.set('ip', pairingCode.ip);
+  pairingUrl.searchParams.set('port', String(pairingCode.port));
+  pairingUrl.searchParams.set('expiresAt', String(pairingCode.timestamp + pairingCode.expiresIn));
+  return pairingUrl.toString();
+}
+
+function isPrivateIPv4(address) {
+  const parts = address.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(Number.isNaN)) {
+    return false;
+  }
+
+  if (parts[0] === 10) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  return false;
+}
+
+function isLinkLocalIPv4(address) {
+  return address.startsWith('169.254.');
+}
+
+function isVirtualInterface(interfaceName) {
+  const normalized = String(interfaceName || '').toLowerCase();
+  return VIRTUAL_INTERFACE_HINTS.some((hint) => normalized.includes(hint));
+}
+
+function isIPv4Family(family) {
+  return family === 'IPv4' || family === 4 || family === '4';
+}
+
+function scoreNetworkCandidate(candidate) {
+  let score = 0;
+
+  if (isPrivateIPv4(candidate.ip)) score += 100;
+  if (isLinkLocalIPv4(candidate.ip)) score -= 150;
+  if (isVirtualInterface(candidate.interface)) score -= 120;
+
+  const iface = candidate.interface.toLowerCase();
+  if (iface.includes('wi-fi') || iface.includes('wifi') || iface.includes('wlan')) score += 30;
+  if (iface.includes('ethernet') || iface.includes('eth') || iface.includes('lan')) score += 20;
+
+  return score;
+}
+
+function getNetworkCandidates() {
+  const interfaces = os.networkInterfaces();
+  const candidates = [];
+
+  for (const [name, addrs] of Object.entries(interfaces)) {
+    for (const addr of addrs || []) {
+      if (!isIPv4Family(addr.family) || addr.internal || !addr.address) {
+        continue;
+      }
+
+      candidates.push({
+        interface: name,
+        ip: addr.address,
+        netmask: addr.netmask,
+        score: 0
+      });
+    }
+  }
+
+  candidates.forEach((candidate) => {
+    candidate.score = scoreNetworkCandidate(candidate);
+  });
+
+  candidates.sort((a, b) => b.score - a.score || a.interface.localeCompare(b.interface));
+  return candidates;
+}
+
+function normalizeHostAndPort(rawHost, rawPort) {
+  let hostInput = String(rawHost || '').trim();
+  let port = Number.parseInt(rawPort, 10);
+
+  if (!hostInput) {
+    return { error: 'Device IP is required' };
+  }
+
+  if (hostInput.startsWith('http://') || hostInput.startsWith('https://')) {
+    try {
+      const parsed = new URL(hostInput);
+      hostInput = parsed.hostname;
+      if (!Number.isInteger(port) && parsed.port) {
+        port = Number.parseInt(parsed.port, 10);
+      }
+    } catch {
+      return { error: 'Invalid device URL/IP format' };
+    }
+  } else if (hostInput.includes(':') && hostInput.split(':').length === 2) {
+    const [hostPart, portPart] = hostInput.split(':');
+    hostInput = hostPart.trim();
+    if (!Number.isInteger(port) && portPart) {
+      port = Number.parseInt(portPart.trim(), 10);
+    }
+  }
+
+  if (!Number.isInteger(port)) {
+    port = 3000;
+  }
+
+  if (port < 1 || port > 65535) {
+    return { error: 'Invalid port. Use a value between 1 and 65535' };
+  }
+
+  if (net.isIP(hostInput) !== 4) {
+    return { error: 'Invalid IPv4 address' };
+  }
+
+  return { ip: hostInput, port };
+}
+
+function checkRemoteServer(ip, port) {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host: ip,
+        port,
+        path: '/health',
+        method: 'GET',
+        timeout: 3000
+      },
+      (resp) => {
+        resolve(resp.statusCode >= 200 && resp.statusCode < 500);
+      }
+    );
+
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+
+    req.on('error', () => {
+      resolve(false);
+    });
+
+    req.end();
+  });
 }
 
 // Verify and pair device
@@ -56,16 +220,11 @@ function pairDevice(pairingCode, clientId) {
 
 // Get network interface
 function getLocalIP() {
-  const interfaces = os.networkInterfaces();
-  
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        return iface.address;
-      }
-    }
+  const candidates = getNetworkCandidates();
+  if (candidates.length > 0) {
+    return candidates[0].ip;
   }
-  
+
   return 'localhost';
 }
 
@@ -84,8 +243,10 @@ function registerQREndpoints(app) {
   // Generate QR code for pairing
   app.post('/api/qr/generate', async (req, res) => {
     try {
-      const { deviceName } = req.body;
-      const ip = getLocalIP();
+      const { deviceName, ip: requestedIp } = req.body || {};
+      const candidates = getNetworkCandidates();
+      const selectedCandidate = candidates.find((candidate) => candidate.ip === requestedIp);
+      const ip = selectedCandidate?.ip || getLocalIP();
       const port = process.env.PORT || 3000;
       
       const deviceInfo = {
@@ -95,13 +256,20 @@ function registerQREndpoints(app) {
       };
       
       const pairingCode = generatePairingCode(deviceInfo);
-      const qrImage = await generateQRCode(pairingCode);
+      const qrData = createPairingURL(pairingCode);
+      const qrImage = await generateQRCode(qrData);
       
       res.json({
         success: true,
         qrCode: qrImage,
+        qrData,
         pairingCode: pairingCode.id,
         deviceInfo,
+        recommendedIP: ip,
+        availableIPs: candidates.map((candidate) => ({
+          interface: candidate.interface,
+          ip: candidate.ip
+        })),
         expiresIn: 300
       });
     } catch (error) {
@@ -155,19 +323,31 @@ function registerQREndpoints(app) {
   });
   
   // Manual IP pairing
-  app.post('/api/qr/pair-by-ip', (req, res) => {
+  app.post('/api/qr/pair-by-ip', async (req, res) => {
     try {
-      const { ip, port, clientId, deviceName } = req.body;
+      const { ip, port, clientId, deviceName } = req.body || {};
       
       if (!ip || !clientId) {
         return res.status(400).json({ error: 'Missing required fields' });
       }
+
+      const normalizedTarget = normalizeHostAndPort(ip, port);
+      if (normalizedTarget.error) {
+        return res.status(400).json({ error: normalizedTarget.error });
+      }
+
+      const reachable = await checkRemoteServer(normalizedTarget.ip, normalizedTarget.port);
+      if (!reachable) {
+        return res.status(400).json({
+          error: `Cannot reach device at ${normalizedTarget.ip}:${normalizedTarget.port}. Ensure both devices are on same Wi-Fi, app is running, and firewall allows port ${normalizedTarget.port}.`
+        });
+      }
       
       const device = {
         clientId,
-        deviceName: deviceName || `Device at ${ip}`,
-        ip,
-        port: port || 3000,
+        deviceName: deviceName || `Device at ${normalizedTarget.ip}`,
+        ip: normalizedTarget.ip,
+        port: normalizedTarget.port,
         pairedAt: Date.now(),
         lastSeen: Date.now(),
         pairingMethod: 'manual-ip'
@@ -209,20 +389,11 @@ function registerQREndpoints(app) {
   
   // Get network info
   app.get('/api/network-info', (req, res) => {
-    const interfaces = os.networkInterfaces();
-    const networks = [];
-    
-    for (const [name, addrs] of Object.entries(interfaces)) {
-      for (const addr of addrs) {
-        if (addr.family === 'IPv4' && !addr.internal) {
-          networks.push({
-            interface: name,
-            ip: addr.address,
-            netmask: addr.netmask
-          });
-        }
-      }
-    }
+    const networks = getNetworkCandidates().map(({ interface: ifaceName, ip, netmask }) => ({
+      interface: ifaceName,
+      ip,
+      netmask
+    }));
     
     res.json({
       localhost: getLocalIP(),
@@ -237,8 +408,10 @@ module.exports = {
   registerQREndpoints,
   generatePairingCode,
   generateQRCode,
+  createPairingURL,
   pairDevice,
   getPairedDevices,
   unpairDevice,
-  getLocalIP
+  getLocalIP,
+  getNetworkCandidates
 };

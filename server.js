@@ -20,6 +20,10 @@ const corsOptions = {
 
 const app = express();
 
+function isIPv4Family(family) {
+  return family === 'IPv4' || family === 4 || family === '4';
+}
+
 // Apply CORS headers for all responses
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -91,6 +95,9 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Register QR/network endpoints before server starts listening.
+registerQREndpoints(app);
 
 // Serve LICENSE file
 app.get('/LICENSE', (req, res) => {
@@ -547,7 +554,7 @@ app.get('/api/system-info', (req, res) => {
 
   for (const [name, interfaces] of Object.entries(networkInterfaces)) {
     interfaces.forEach(iface => {
-      if (iface.family === 'IPv4' && !iface.internal) {
+      if (isIPv4Family(iface.family) && !iface.internal) {
         ipAddresses.push({
           interface: name,
           address: iface.address,
@@ -1129,6 +1136,8 @@ function formatFileSize(bytes) {
 
 // Start server
 server.listen(PORT, '0.0.0.0', () => {
+  const recommendedHost = getLocalIP();
+
   console.log(`\n========================================`);
   console.log(`File Transfer Server Running`);
   console.log(`========================================`);
@@ -1139,20 +1148,20 @@ server.listen(PORT, '0.0.0.0', () => {
   const ips = [];
   for (const [name, interfaces] of Object.entries(networkInterfaces)) {
     interfaces.forEach(iface => {
-      if (iface.family === 'IPv4' && !iface.internal) {
+      if (isIPv4Family(iface.family) && !iface.internal) {
         ips.push(iface.address);
         console.log(`   http://${iface.address}:${PORT}`);
       }
     });
   }
-  console.log(`\n✅ Recommended LAN URL: http://${getLocalIP()}:${PORT}`);
-  
-  // Register QR pairing endpoints
-  registerQREndpoints(app);
+  console.log(`\n✅ Recommended LAN URL: http://${recommendedHost}:${PORT}`);
   
   console.log(`\n📁 Upload Directory: ${UPLOAD_DIR}`);
-  console.log(`⚡ WebSocket: ws://0.0.0.0:${PORT}`);
-  console.log(`📱 QR Pairing Available at: http://0.0.0.0:${PORT}/api/qr/generate`);
+  console.log(`⚡ WebSocket: ws://${recommendedHost}:${PORT}`);
+  console.log(`📱 QR Pairing Available at: http://${recommendedHost}:${PORT}/api/qr/generate`);
+  if (process.platform === 'win32') {
+    console.log(`🛡️ If LAN access still fails, run allow_firewall.bat as Administrator.`);
+  }
   console.log(`========================================\n`);
   console.log(`✅ Server is accessible from all network interfaces!`);
 });
