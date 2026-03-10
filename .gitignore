@@ -1,5 +1,29 @@
-node_modulesdist/
+# Dependencies
+node_modules/
+node_modules/.package-lock.json
+
+# Build outputs
+dist/
+out/
+build/
+
+# Environment files
+.env
+.env.local
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE settings
+.vscode/
+.idea/
+
+# Project-specific files
 uploads/
 *.exe
 *.asar
-node_modules/.package-lock.json
+node_modulesdist/
